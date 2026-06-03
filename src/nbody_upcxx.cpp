@@ -1,0 +1,330 @@
+/*
+ * UPC++ (PGAS) N-body simulation.
+ *
+ * Usage:
+ *   OUTPUT_FILE=<output_file> upcxx-run -n <P> ./nbody_upcxx <input_file>
+ *
+ * Or using make:
+ *   make run RUN_PROCS=8 INPUT=input.txt OUTPUT=result.txt
+ *
+ * Input file format:
+ *   Line 1: N dt steps
+ *   Next N lines: M x y z vx vy vz
+ *
+ * Output file format:
+ *   Line 1: N=<N> bodies
+ *   Line 2: i - M x y z vx vy vz
+ *   Next N lines: i - M x y z vx vy vz
+ *   (i is the body index from 1 to N)
+ */
+
+#include <cstdio>
+#include <cstdlib>
+#include <upcxx/upcxx.hpp>
+
+#include "nbody_common.hpp"
+
+#ifdef USE_CUDA
+#include "../cuda/nbody_accel.hpp"
+#endif
+
+static void free_global_arrays(upcxx::global_ptr<double> gm,
+                               upcxx::global_ptr<double> gx,
+                               upcxx::global_ptr<double> gy,
+                               upcxx::global_ptr<double> gz,
+                               upcxx::global_ptr<double> gvx,
+                               upcxx::global_ptr<double> gvy,
+                               upcxx::global_ptr<double> gvz,
+                               upcxx::global_ptr<double> gvxh,
+                               upcxx::global_ptr<double> gvyh,
+                               upcxx::global_ptr<double> gvzh) {
+    upcxx::delete_(gm);
+    upcxx::delete_(gx);
+    upcxx::delete_(gy);
+    upcxx::delete_(gz);
+    upcxx::delete_(gvx);
+    upcxx::delete_(gvy);
+    upcxx::delete_(gvz);
+    upcxx::delete_(gvxh);
+    upcxx::delete_(gvyh);
+    upcxx::delete_(gvzh);
+}
+
+int main(int argc, char **argv) {
+    upcxx::init();
+
+    const int rank = upcxx::rank_me();
+    const int nprocs = upcxx::rank_n();
+
+    if (argc != 2) {
+        if (rank == 0) {
+            std::fprintf(stderr,
+                         "Usage: upcxx-run -n <P> %s <input_file>\n",
+                         argv[0]);
+        }
+        upcxx::finalize();
+        return 1;
+    }
+
+    const char *input_path = argv[1];
+
+    int n = 0, steps = 0;
+    double dt = 0.0;
+    Body *all_bodies = nullptr;
+
+    if (rank == 0) {
+        if (read_input(input_path, &n, &dt, &steps, &all_bodies) != 0) {
+            upcxx::finalize();
+            return 1;
+        }
+    }
+
+    n = upcxx::broadcast(n, 0).wait();
+    dt = upcxx::broadcast(dt, 0).wait();
+    steps = upcxx::broadcast(steps, 0).wait();
+
+    int *counts =
+        static_cast<int *>(std::malloc(static_cast<size_t>(nprocs) * sizeof(int)));
+    int *displs =
+        static_cast<int *>(std::malloc(static_cast<size_t>(nprocs) * sizeof(int)));
+    if (!counts || !displs) {
+        if (rank == 0) {
+            std::fprintf(stderr, "Allocation failed\n");
+        }
+        std::free(all_bodies);
+        std::free(counts);
+        std::free(displs);
+        upcxx::finalize();
+        return 1;
+    }
+    partition_counts(n, nprocs, counts, displs);
+
+    const int local_count = counts[rank];
+    const int lo = displs[rank];
+    const size_t local_d_alloc =
+        local_count > 0 ? static_cast<size_t>(local_count) : 1u;
+
+    upcxx::global_ptr<double> gm = upcxx::new_array<double>(n);
+    upcxx::global_ptr<double> gx = upcxx::new_array<double>(n);
+    upcxx::global_ptr<double> gy = upcxx::new_array<double>(n);
+    upcxx::global_ptr<double> gz = upcxx::new_array<double>(n);
+    upcxx::global_ptr<double> gvx = upcxx::new_array<double>(n);
+    upcxx::global_ptr<double> gvy = upcxx::new_array<double>(n);
+    upcxx::global_ptr<double> gvz = upcxx::new_array<double>(n);
+    upcxx::global_ptr<double> gvxh = upcxx::new_array<double>(n);
+    upcxx::global_ptr<double> gvyh = upcxx::new_array<double>(n);
+    upcxx::global_ptr<double> gvzh = upcxx::new_array<double>(n);
+
+    if (rank == 0) {
+        fill_global_state(n, all_bodies, gm, gx, gy, gz, gvx, gvy, gvz);
+        std::free(all_bodies);
+        all_bodies = nullptr;
+    }
+    upcxx::barrier();
+
+    double *ax0 = static_cast<double *>(std::malloc(local_d_alloc * sizeof(double)));
+    double *ay0 = static_cast<double *>(std::malloc(local_d_alloc * sizeof(double)));
+    double *az0 = static_cast<double *>(std::malloc(local_d_alloc * sizeof(double)));
+    double *ax1 = static_cast<double *>(std::malloc(local_d_alloc * sizeof(double)));
+    double *ay1 = static_cast<double *>(std::malloc(local_d_alloc * sizeof(double)));
+    double *az1 = static_cast<double *>(std::malloc(local_d_alloc * sizeof(double)));
+
+    if (!ax0 || !ay0 || !az0 || !ax1 || !ay1 || !az1) {
+        if (rank == 0) {
+            std::fprintf(stderr, "Allocation failed\n");
+        }
+        std::free(ax0);
+        std::free(ay0);
+        std::free(az0);
+        std::free(ax1);
+        std::free(ay1);
+        std::free(az1);
+        std::free(counts);
+        std::free(displs);
+        free_global_arrays(gm, gx, gy, gz, gvx, gvy, gvz, gvxh, gvyh, gvzh);
+        upcxx::finalize();
+        return 1;
+    }
+
+#ifdef USE_CUDA
+    double *h_m = nullptr;
+    double *h_x = nullptr;
+    double *h_y = nullptr;
+    double *h_z = nullptr;
+    if (local_count > 0) {
+        h_m = static_cast<double *>(std::malloc(static_cast<size_t>(n) * sizeof(double)));
+        h_x = static_cast<double *>(std::malloc(static_cast<size_t>(n) * sizeof(double)));
+        h_y = static_cast<double *>(std::malloc(static_cast<size_t>(n) * sizeof(double)));
+        h_z = static_cast<double *>(std::malloc(static_cast<size_t>(n) * sizeof(double)));
+        if (!h_m || !h_x || !h_y || !h_z) {
+            if (rank == 0) {
+                std::fprintf(stderr, "Allocation failed\n");
+            }
+            cuda_accel_finalize();
+            std::free(h_m);
+            std::free(h_x);
+            std::free(h_y);
+            std::free(h_z);
+            std::free(ax0);
+            std::free(ay0);
+            std::free(az0);
+            std::free(ax1);
+            std::free(ay1);
+            std::free(az1);
+            std::free(counts);
+            std::free(displs);
+            free_global_arrays(gm, gx, gy, gz, gvx, gvy, gvz, gvxh, gvyh, gvzh);
+            upcxx::finalize();
+            return 1;
+        }
+        if (cuda_accel_init(n, lo, local_count) != 0) {
+            std::fprintf(stderr, "CUDA init failed on rank %d\n", rank);
+            std::free(h_m);
+            std::free(h_x);
+            std::free(h_y);
+            std::free(h_z);
+            std::free(ax0);
+            std::free(ay0);
+            std::free(az0);
+            std::free(ax1);
+            std::free(ay1);
+            std::free(az1);
+            std::free(counts);
+            std::free(displs);
+            free_global_arrays(gm, gx, gy, gz, gvx, gvy, gvz, gvxh, gvyh, gvzh);
+            upcxx::finalize();
+            return 1;
+        }
+    }
+#endif
+
+    for (int s = 0; s < steps; s++) {
+#ifdef USE_CUDA
+        if (local_count > 0) {
+            for (int i = 0; i < n; i++) {
+                h_m[i] = global_get(gm, i);
+                h_x[i] = global_get(gx, i);
+                h_y[i] = global_get(gy, i);
+                h_z[i] = global_get(gz, i);
+            }
+            cuda_compute_accel_batch(h_m, h_x, h_y, h_z, ax0, ay0, az0);
+        }
+#else
+#ifdef _OPENMP
+#pragma omp parallel for
+#endif
+        for (int li = 0; li < local_count; li++) {
+            const int gi = lo + li;
+            compute_accel(n, gm, gx, gy, gz, gi, &ax0[li], &ay0[li], &az0[li]);
+        }
+#endif
+
+#ifdef _OPENMP
+#pragma omp parallel for
+#endif
+        for (int li = 0; li < local_count; li++) {
+            const int gi = lo + li;
+            const double vx_i = global_get(gvx, gi);
+            const double vy_i = global_get(gvy, gi);
+            const double vz_i = global_get(gvz, gi);
+            const double vxh_i = vx_i + 0.5 * ax0[li] * dt;
+            const double vyh_i = vy_i + 0.5 * ay0[li] * dt;
+            const double vzh_i = vz_i + 0.5 * az0[li] * dt;
+            global_put(gvxh, gi, vxh_i);
+            global_put(gvyh, gi, vyh_i);
+            global_put(gvzh, gi, vzh_i);
+            global_put(gx, gi, global_get(gx, gi) + vxh_i * dt);
+            global_put(gy, gi, global_get(gy, gi) + vyh_i * dt);
+            global_put(gz, gi, global_get(gz, gi) + vzh_i * dt);
+        }
+        upcxx::barrier();
+
+#ifdef USE_CUDA
+        if (local_count > 0) {
+            for (int i = 0; i < n; i++) {
+                h_m[i] = global_get(gm, i);
+                h_x[i] = global_get(gx, i);
+                h_y[i] = global_get(gy, i);
+                h_z[i] = global_get(gz, i);
+            }
+            cuda_compute_accel_batch(h_m, h_x, h_y, h_z, ax1, ay1, az1);
+        }
+#else
+#ifdef _OPENMP
+#pragma omp parallel for
+#endif
+        for (int li = 0; li < local_count; li++) {
+            const int gi = lo + li;
+            compute_accel(n, gm, gx, gy, gz, gi, &ax1[li], &ay1[li], &az1[li]);
+        }
+#endif
+
+#ifdef _OPENMP
+#pragma omp parallel for
+#endif
+        for (int li = 0; li < local_count; li++) {
+            const int gi = lo + li;
+            global_put(gvx, gi, global_get(gvxh, gi) + 0.5 * ax1[li] * dt);
+            global_put(gvy, gi, global_get(gvyh, gi) + 0.5 * ay1[li] * dt);
+            global_put(gvz, gi, global_get(gvzh, gi) + 0.5 * az1[li] * dt);
+        }
+        upcxx::barrier();
+    }
+
+#ifdef USE_CUDA
+    cuda_accel_finalize();
+    std::free(h_m);
+    std::free(h_x);
+    std::free(h_y);
+    std::free(h_z);
+#endif
+
+    if (rank == 0) {
+        const char *output_path = std::getenv("OUTPUT_FILE");
+        if (!output_path || output_path[0] == '\0') {
+            output_path = "output.txt";
+        }
+
+        FILE *fout = std::fopen(output_path, "w");
+        if (!fout) {
+            std::perror(output_path);
+        }
+
+        std::printf("%d %.17g %d\n", n, dt, steps);
+        for (int i = 0; i < n; i++) {
+            const double bm = global_get(gm, i);
+            const double bx = global_get(gx, i);
+            const double by = global_get(gy, i);
+            const double bz = global_get(gz, i);
+            const double bvx = global_get(gvx, i);
+            const double bvy = global_get(gvy, i);
+            const double bvz = global_get(gvz, i);
+            std::printf("%.17g %.17g %.17g %.17g %.17g %.17g %.17g\n", bm, bx,
+                        by, bz, bvx, bvy, bvz);
+            if (fout) {
+                if (i == 0) {
+                    std::fprintf(fout, "N=%d bodies\n", n);
+                    std::fprintf(fout, "i - M x y z vx vy vz\n");
+                }
+                std::fprintf(fout,
+                             "%d - %.17g %.17g %.17g %.17g %.17g %.17g %.17g\n",
+                             i + 1, bm, bx, by, bz, bvx, bvy, bvz);
+            }
+        }
+        if (fout) {
+            std::fclose(fout);
+        }
+    }
+
+    std::free(ax0);
+    std::free(ay0);
+    std::free(az0);
+    std::free(ax1);
+    std::free(ay1);
+    std::free(az1);
+    std::free(counts);
+    std::free(displs);
+    free_global_arrays(gm, gx, gy, gz, gvx, gvy, gvz, gvxh, gvyh, gvzh);
+    upcxx::finalize();
+    return 0;
+}
