@@ -53,10 +53,6 @@ Bezposrednio:
 OUTPUT_FILE=wynik.txt upcxx-run -shared-heap 512M -n 4 ./nbody_upcxx input.txt
 ```
 
-## PGAS a MPI
-
-Wersja MPI uzywa kolektywow (`MPI_Allgatherv`) do synchronizacji polozen i predkosci. Wersja PGAS trzyma stan w **shared heap** UPC++ (`upcxx::new_array`). Kazdy proces aktualizuje swoj wycinek tablic; `upcxx::barrier()` zapewnia widocznosc danych przed kolejnym liczeniem przyspieszen. Odczyty zdalne realizowane sa przez `rget`.
-
 ## Format pliku wejsciowego
 
 1. Pierwsza linia:
