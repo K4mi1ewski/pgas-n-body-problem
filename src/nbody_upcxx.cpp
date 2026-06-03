@@ -21,13 +21,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <upcxx/upcxx.hpp>
-
 #include "nbody_common.hpp"
 
-#ifdef USE_CUDA
-#include "../cuda/nbody_accel.hpp"
-#endif
-
+// Kolektywne zwolnienie tablic w shared heap.
 static void free_global_arrays(upcxx::global_ptr<double> gm,
                                upcxx::global_ptr<double> gx,
                                upcxx::global_ptr<double> gy,
@@ -72,11 +68,19 @@ int main(int argc, char **argv) {
     double dt = 0.0;
     Body *all_bodies = nullptr;
 
+    int read_ok = 0;
     if (rank == 0) {
-        if (read_input(input_path, &n, &dt, &steps, &all_bodies) != 0) {
-            upcxx::finalize();
-            return 1;
+        read_ok = (read_input(input_path, &n, &dt, &steps, &all_bodies) == 0) ? 1
+                                                                            : 0;
+    }
+    read_ok = upcxx::broadcast(read_ok, 0).wait();
+    if (!read_ok) {
+        if (rank == 0) {
+            std::fprintf(stderr, "Failed to read input file\n");
         }
+        std::free(all_bodies);
+        upcxx::finalize();
+        return 1;
     }
 
     n = upcxx::broadcast(n, 0).wait();
@@ -104,6 +108,7 @@ int main(int argc, char **argv) {
     const size_t local_d_alloc =
         local_count > 0 ? static_cast<size_t>(local_count) : 1u;
 
+    // Tablice stanu w shared heap (PGAS)
     upcxx::global_ptr<double> gm = upcxx::new_array<double>(n);
     upcxx::global_ptr<double> gx = upcxx::new_array<double>(n);
     upcxx::global_ptr<double> gy = upcxx::new_array<double>(n);
@@ -146,70 +151,10 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-#ifdef USE_CUDA
-    double *h_m = nullptr;
-    double *h_x = nullptr;
-    double *h_y = nullptr;
-    double *h_z = nullptr;
-    if (local_count > 0) {
-        h_m = static_cast<double *>(std::malloc(static_cast<size_t>(n) * sizeof(double)));
-        h_x = static_cast<double *>(std::malloc(static_cast<size_t>(n) * sizeof(double)));
-        h_y = static_cast<double *>(std::malloc(static_cast<size_t>(n) * sizeof(double)));
-        h_z = static_cast<double *>(std::malloc(static_cast<size_t>(n) * sizeof(double)));
-        if (!h_m || !h_x || !h_y || !h_z) {
-            if (rank == 0) {
-                std::fprintf(stderr, "Allocation failed\n");
-            }
-            cuda_accel_finalize();
-            std::free(h_m);
-            std::free(h_x);
-            std::free(h_y);
-            std::free(h_z);
-            std::free(ax0);
-            std::free(ay0);
-            std::free(az0);
-            std::free(ax1);
-            std::free(ay1);
-            std::free(az1);
-            std::free(counts);
-            std::free(displs);
-            free_global_arrays(gm, gx, gy, gz, gvx, gvy, gvz, gvxh, gvyh, gvzh);
-            upcxx::finalize();
-            return 1;
-        }
-        if (cuda_accel_init(n, lo, local_count) != 0) {
-            std::fprintf(stderr, "CUDA init failed on rank %d\n", rank);
-            std::free(h_m);
-            std::free(h_x);
-            std::free(h_y);
-            std::free(h_z);
-            std::free(ax0);
-            std::free(ay0);
-            std::free(az0);
-            std::free(ax1);
-            std::free(ay1);
-            std::free(az1);
-            std::free(counts);
-            std::free(displs);
-            free_global_arrays(gm, gx, gy, gz, gvx, gvy, gvz, gvxh, gvyh, gvzh);
-            upcxx::finalize();
-            return 1;
-        }
-    }
-#endif
-
+    // Petla Verlet: a(t) -> polowa predkosc i pozycja -> barrier ->
+    //               a(t+dt) -> pelna predkosc -> barrier
     for (int s = 0; s < steps; s++) {
-#ifdef USE_CUDA
-        if (local_count > 0) {
-            for (int i = 0; i < n; i++) {
-                h_m[i] = global_get(gm, i);
-                h_x[i] = global_get(gx, i);
-                h_y[i] = global_get(gy, i);
-                h_z[i] = global_get(gz, i);
-            }
-            cuda_compute_accel_batch(h_m, h_x, h_y, h_z, ax0, ay0, az0);
-        }
-#else
+        // 1) przyspieszenie a(t) dla lokalnych cial
 #ifdef _OPENMP
 #pragma omp parallel for
 #endif
@@ -217,8 +162,8 @@ int main(int argc, char **argv) {
             const int gi = lo + li;
             compute_accel(n, gm, gx, gy, gz, gi, &ax0[li], &ay0[li], &az0[li]);
         }
-#endif
 
+        // 2) polowkowy krok predkosci i aktualizacja pozycji
 #ifdef _OPENMP
 #pragma omp parallel for
 #endif
@@ -230,26 +175,19 @@ int main(int argc, char **argv) {
             const double vxh_i = vx_i + 0.5 * ax0[li] * dt;
             const double vyh_i = vy_i + 0.5 * ay0[li] * dt;
             const double vzh_i = vz_i + 0.5 * az0[li] * dt;
+            const double x_i = global_get(gx, gi);
+            const double y_i = global_get(gy, gi);
+            const double z_i = global_get(gz, gi);
             global_put(gvxh, gi, vxh_i);
             global_put(gvyh, gi, vyh_i);
             global_put(gvzh, gi, vzh_i);
-            global_put(gx, gi, global_get(gx, gi) + vxh_i * dt);
-            global_put(gy, gi, global_get(gy, gi) + vyh_i * dt);
-            global_put(gz, gi, global_get(gz, gi) + vzh_i * dt);
+            global_put(gx, gi, x_i + vxh_i * dt);
+            global_put(gy, gi, y_i + vyh_i * dt);
+            global_put(gz, gi, z_i + vzh_i * dt);
         }
         upcxx::barrier();
 
-#ifdef USE_CUDA
-        if (local_count > 0) {
-            for (int i = 0; i < n; i++) {
-                h_m[i] = global_get(gm, i);
-                h_x[i] = global_get(gx, i);
-                h_y[i] = global_get(gy, i);
-                h_z[i] = global_get(gz, i);
-            }
-            cuda_compute_accel_batch(h_m, h_x, h_y, h_z, ax1, ay1, az1);
-        }
-#else
+        // 3) przyspieszenie a(t+dt) z nowych pozycji
 #ifdef _OPENMP
 #pragma omp parallel for
 #endif
@@ -257,8 +195,8 @@ int main(int argc, char **argv) {
             const int gi = lo + li;
             compute_accel(n, gm, gx, gy, gz, gi, &ax1[li], &ay1[li], &az1[li]);
         }
-#endif
 
+        // 4) pelny krok predkosci v(t+dt)
 #ifdef _OPENMP
 #pragma omp parallel for
 #endif
@@ -271,14 +209,7 @@ int main(int argc, char **argv) {
         upcxx::barrier();
     }
 
-#ifdef USE_CUDA
-    cuda_accel_finalize();
-    std::free(h_m);
-    std::free(h_x);
-    std::free(h_y);
-    std::free(h_z);
-#endif
-
+    // Rank 0: wynik na stdout i do pliku OUTPUT_FILE
     if (rank == 0) {
         const char *output_path = std::getenv("OUTPUT_FILE");
         if (!output_path || output_path[0] == '\0') {

@@ -9,8 +9,7 @@ Srodowisko docelowe: **klaster Linux** z zainstalowanym UPC++ (modul lub zmienna
 - kompilator C++14 (przez wrapper `upcxx`)
 - [UPC++](https://upcxx.lbl.gov/) (`upcxx`, `upcxx-run`)
 - `make`, `libm`
-- opcjonalnie: OpenMP (`make threaded`)
-- opcjonalnie: CUDA Toolkit (`make cuda`)
+- opcjonalnie: OpenMP w kompilatorze (`make threaded`)
 
 ## Kompilacja
 
@@ -24,6 +23,12 @@ Build z optymalizacja:
 
 ```bash
 make opt
+```
+
+Build z OpenMP (watki wewnatrz kazdego procesu UPC++):
+
+```bash
+make threaded
 ```
 
 ## Uruchamianie
@@ -52,6 +57,26 @@ Bezposrednio:
 ```bash
 OUTPUT_FILE=wynik.txt upcxx-run -shared-heap 512M -n 4 ./nbody_upcxx input.txt
 ```
+
+## PGAS a MPI
+
+Wersja MPI uzywa kolektywow (`MPI_Allgatherv`) do synchronizacji polozen i predkosci. Wersja PGAS trzyma stan w **shared heap** UPC++ (`upcxx::new_array`). Kazdy proces aktualizuje swoj wycinek tablic; `upcxx::barrier()` zapewnia widocznosc danych przed kolejnym liczeniem przyspieszen. Odczyty zdalne realizowane sa przez `rget`.
+
+## Rownoleglosc: UPC++ i OpenMP
+
+Dwa niezalezne poziomy:
+
+| Poziom | Mechanizm | Sterowanie |
+|--------|-----------|------------|
+| Miedzy procesami | UPC++ / PGAS | `upcxx-run -n P` (`RUN_PROCS`) |
+| W jednym procesie | OpenMP (opcjonalnie) | `make threaded` |
+
+- **`make`** (domyslnie): w kazdym procesie petle wykonuje jeden watk CPU. PGAS nadal uzywa `P` procesow.
+- **`make threaded`**: kompilacja z `-fopenmp` i `UPCXX_THREADMODE=par`. Petle po `local_count` w kroku Verlet maja `#pragma omp parallel for` (przyspieszenia oraz aktualizacja predkosci/pozycji).
+
+OpenMP dzieli iteracje `li = 0 … local_count-1` miedzy watki CPU **na tym samym ranku**. Nie zastepuje procesow UPC++: przy `RUN_PROCS=4` i 8 watkach OpenMP masz 4 procesy × do 8 watkow kazdy.
+
+**Uwaga:** `compute_accel` wywoluje `global_get` / `global_put` (PGAS). Przy OpenMP kilka watkow na jednym ranku moze jednoczesnie korzystac ze shared heap — wymaga UPC++ z `-threadmode=par` (`make threaded` to ustawia). Jesli na klastrze zalecany jest tylko `threadmode=seq`, uzywaj zwyklego `make`.
 
 ## Format pliku wejsciowego
 
@@ -88,17 +113,6 @@ Stala grawitacji: `G = 6.67430e-11 m^3/(kg*s^2)` (SI).
   i - M x y z vx vy vz
   ...
   ```
-
-## Opcjonalne CUDA
-
-Katalog `cuda/` jest opcjonalny. Domyslny `make` nie uzywa GPU.
-
-```bash
-make cuda
-make run RUN_PROCS=4
-```
-
-Wymaga `nvcc` i biblioteki CUDA. Katalog `cuda/` mozna usunac — build CPU pozostaje bez zmian.
 
 ## Uwagi dla klastra
 

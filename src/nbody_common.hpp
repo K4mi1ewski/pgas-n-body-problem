@@ -15,6 +15,7 @@ struct Body {
     double vx, vy, vz;
 };
 
+// Odczyt elementu tablicy z shared heap (lokalnie lub przez rget).
 inline double global_get(upcxx::global_ptr<const double> base, int idx) {
     upcxx::global_ptr<const double> p = base + idx;
     if (p.is_local()) {
@@ -23,6 +24,7 @@ inline double global_get(upcxx::global_ptr<const double> base, int idx) {
     return upcxx::rget(p).wait();
 }
 
+// Zapis elementu do shared heap (lokalnie lub przez rput).
 inline void global_put(upcxx::global_ptr<double> base, int idx, double value) {
     upcxx::global_ptr<double> p = base + idx;
     if (p.is_local()) {
@@ -32,6 +34,7 @@ inline void global_put(upcxx::global_ptr<double> base, int idx, double value) {
     }
 }
 
+// Przyspieszenie ciala gi od wszystkich pozostalych (odczyt PGAS).
 inline void compute_accel(int n, upcxx::global_ptr<const double> gm,
                           upcxx::global_ptr<const double> gx,
                           upcxx::global_ptr<const double> gy,
@@ -63,6 +66,7 @@ inline void compute_accel(int n, upcxx::global_ptr<const double> gm,
     *az = sumz;
 }
 
+// Wczytanie N, dt, steps i danych cial z pliku wejsciowego.
 inline int read_input(const char *path, int *n_out, double *dt_out,
                       int *steps_out, Body **bodies_out) {
     FILE *f = std::fopen(path, "r");
@@ -109,6 +113,7 @@ inline int read_input(const char *path, int *n_out, double *dt_out,
     return 0;
 }
 
+// Podzial N cial miedzy procesy (counts, displs).
 inline void partition_counts(int n, int size, int *counts, int *displs) {
     const int base = n / size;
     const int rem = n % size;
@@ -120,6 +125,7 @@ inline void partition_counts(int n, int size, int *counts, int *displs) {
     }
 }
 
+// Inicjalizacja globalnych tablic stanu z wczytanych cial.
 inline void fill_global_state(int n, const Body *bodies,
                               upcxx::global_ptr<double> gm,
                               upcxx::global_ptr<double> gx,

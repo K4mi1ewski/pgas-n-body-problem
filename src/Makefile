@@ -1,5 +1,4 @@
-# UPC++ N-body (PGAS) — build from src/ on Linux cluster.
-#
+# UPC++ N-body (PGAS)
 #   export UPCXX_INSTALL=/path/to/upcxx
 #   make
 #   make run RUN_PROCS=8 INPUT=input.txt OUTPUT=result.txt
@@ -7,7 +6,6 @@
 # Optional:
 #   make opt          # optimized UPC++ library
 #   make threaded     # OpenMP + UPCXX_THREADMODE=par
-#   make cuda         # USE_CUDA=1 (requires CUDA toolkit)
 
 ifeq ($(UPCXX_INSTALL),)
 $(warning UPCXX_INSTALL is not set; assuming upcxx and upcxx-run are in PATH)
@@ -33,32 +31,17 @@ SRC = nbody_upcxx.cpp
 CXXFLAGS ?= -std=c++14 -Wall -Wextra
 LDFLAGS ?= -lm
 
-USE_CUDA ?= 0
-CUDA_DIR = ../cuda
-CUDA_SRC = $(CUDA_DIR)/nbody_accel.cu
-CUDA_OBJ = nbody_accel.o
-
 RUN_PROCS ?= 4
 INPUT ?= input.txt
 OUTPUT ?= output.txt
 SHARED_HEAP ?= 512M
 
-.PHONY: all clean run opt threaded cuda
+.PHONY: all clean run opt threaded
 
 all: $(TARGET)
 
 $(TARGET): $(SRC) nbody_common.hpp
-ifeq ($(USE_CUDA),1)
-	$(NVCC) -c $(CUDA_SRC) -o $(CUDA_OBJ) -O3 -std=c++14
-	$(CXX) $(CXXFLAGS) -DUSE_CUDA -I$(CUDA_DIR) -o $(TARGET) $(SRC) $(CUDA_OBJ) $(LDFLAGS) -lcudart
-else
 	$(CXX) $(CXXFLAGS) -o $(TARGET) $(SRC) $(LDFLAGS)
-endif
-
-NVCC ?= nvcc
-
-cuda:
-	$(MAKE) USE_CUDA=1
 
 opt:
 	$(MAKE) UPCXX_CODEMODE=opt
@@ -70,4 +53,4 @@ run: $(TARGET)
 	OUTPUT_FILE="$(OUTPUT)" $(UPCXXRUN) -shared-heap $(SHARED_HEAP) -n $(RUN_PROCS) ./$(TARGET) $(INPUT)
 
 clean:
-	rm -f $(TARGET) $(TARGET).exe $(CUDA_OBJ)
+	rm -f $(TARGET) $(TARGET).exe
