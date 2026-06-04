@@ -55,7 +55,13 @@ make run RUN_PROCS=16 SHARED_HEAP=1G
 Bezposrednio:
 
 ```bash
-OUTPUT_FILE=wynik.txt upcxx-run -shared-heap 512M -n 4 ./nbody_upcxx input.txt
+upcxx-run -shared-heap 512M -n 4 ./nbody_upcxx input.txt wynik.txt
+```
+
+Bez drugiego argumentu domyslnie powstanie `output.txt`:
+
+```bash
+upcxx-run -shared-heap 512M -n 4 ./nbody_upcxx input.txt
 ```
 
 ## Rownoleglosc: UPC++ i OpenMP

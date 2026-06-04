@@ -44,7 +44,7 @@ threaded:
 	$(MAKE) UPCXX_THREADMODE=par CXXFLAGS+='-fopenmp'
 
 run: $(TARGET)
-	OUTPUT_FILE="$(OUTPUT)" $(UPCXXRUN) -shared-heap $(SHARED_HEAP) -n $(RUN_PROCS) $(NODES) ./$(TARGET) $(INPUT)
+	$(UPCXXRUN) -shared-heap $(SHARED_HEAP) -n $(RUN_PROCS) $(NODES) ./$(TARGET) $(INPUT) $(OUTPUT)
 
 clean:
 	rm -f $(TARGET) $(TARGET).exe

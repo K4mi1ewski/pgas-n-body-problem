@@ -55,7 +55,13 @@ make run RUN_PROCS=16 SHARED_HEAP=1G
 Direct launch:
 
 ```bash
-OUTPUT_FILE=result.txt upcxx-run -shared-heap 512M -n 4 ./nbody_upcxx input.txt
+upcxx-run -shared-heap 512M -n 4 ./nbody_upcxx input.txt result.txt
+```
+
+Omit the second file argument to use `output.txt`:
+
+```bash
+upcxx-run -shared-heap 512M -n 4 ./nbody_upcxx input.txt
 ```
 
 ## PGAS vs MPI

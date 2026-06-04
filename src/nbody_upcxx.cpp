@@ -2,7 +2,7 @@
  * UPC++ (PGAS) N-body simulation.
  *
  * Usage:
- *   OUTPUT_FILE=<output_file> upcxx-run -n <P> ./nbody_upcxx <input_file>
+ *   upcxx-run -n <P> ./nbody_upcxx <input_file> [output_file]
  *
  * Or using make:
  *   make run RUN_PROCS=8 INPUT=input.txt OUTPUT=result.txt
@@ -52,10 +52,11 @@ int main(int argc, char **argv) {
     const int rank = upcxx::rank_me();
     const int nprocs = upcxx::rank_n();
 
-    if (argc != 2) {
+    if (argc < 2 || argc > 3) {
         if (rank == 0) {
             std::fprintf(stderr,
-                         "Usage: upcxx-run -n <P> %s <input_file>\n",
+                         "Usage: upcxx-run -n <P> %s <input_file> [output_file]\n"
+                         "  default output_file: output.txt\n",
                          argv[0]);
         }
         upcxx::finalize();
@@ -63,6 +64,7 @@ int main(int argc, char **argv) {
     }
 
     const char *input_path = argv[1];
+    const char *output_path = (argc == 3) ? argv[2] : "output.txt";
 
     int n = 0, steps = 0;
     double dt = 0.0;
@@ -209,16 +211,8 @@ int main(int argc, char **argv) {
         upcxx::barrier();
     }
 
-    // Rank 0: wynik na stdout i do pliku OUTPUT_FILE
+    // Rank 0: wynik na stdout i do pliku wyjsciowego
     if (rank == 0) {
-        const char *output_path = std::getenv("OUTPUT_FILE");
-        //do usuniecia
-        int aa = 1;
-        if (!output_path || output_path[0] == '\0') {
-            output_path = "output.txt";
-            aa = 2;
-        }
-
         FILE *fout = std::fopen(output_path, "w");
         if (!fout) {
             std::perror(output_path);
@@ -245,7 +239,6 @@ int main(int argc, char **argv) {
                              i + 1, bm, bx, by, bz, bvx, bvy, bvz);
             }
         }
-        std::fprintf(fout, "XD %d XD\n", aa);
         if (fout) {
             std::fclose(fout);
         }
