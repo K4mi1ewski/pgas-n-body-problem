@@ -212,8 +212,11 @@ int main(int argc, char **argv) {
     // Rank 0: wynik na stdout i do pliku OUTPUT_FILE
     if (rank == 0) {
         const char *output_path = std::getenv("OUTPUT_FILE");
+        //do usuniecia
+        int aa = 1;
         if (!output_path || output_path[0] == '\0') {
             output_path = "output.txt";
+            aa = 2;
         }
 
         FILE *fout = std::fopen(output_path, "w");
@@ -242,6 +245,7 @@ int main(int argc, char **argv) {
                              i + 1, bm, bx, by, bz, bvx, bvy, bvz);
             }
         }
+        std::fprintf(fout, "XD %d XD\n", aa);
         if (fout) {
             std::fclose(fout);
         }

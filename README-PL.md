@@ -40,10 +40,10 @@ make run
 
 Domyslne parametry `make run`:
 
-- `RUN_PROCS=4` — liczba procesow UPC++ (`upcxx-run -n`)
+- `RUN_PROCS=16` — liczba procesow UPC++ (`upcxx-run -n`)
 - `INPUT=input.txt`
 - `OUTPUT=output.txt`
-- `SHARED_HEAP=512M` — rozmiar shared heap (zwieksz przy duzym `N`)
+- `SHARED_HEAP=256M` — rozmiar shared heap (zwieksz przy duzym `N`)
 
 Przyklady:
 
@@ -57,10 +57,6 @@ Bezposrednio:
 ```bash
 OUTPUT_FILE=wynik.txt upcxx-run -shared-heap 512M -n 4 ./nbody_upcxx input.txt
 ```
-
-## PGAS a MPI
-
-Wersja MPI uzywa kolektywow (`MPI_Allgatherv`) do synchronizacji polozen i predkosci. Wersja PGAS trzyma stan w **shared heap** UPC++ (`upcxx::new_array`). Kazdy proces aktualizuje swoj wycinek tablic; `upcxx::barrier()` zapewnia widocznosc danych przed kolejnym liczeniem przyspieszen. Odczyty zdalne realizowane sa przez `rget`.
 
 ## Rownoleglosc: UPC++ i OpenMP
 
